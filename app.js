@@ -382,206 +382,97 @@ app.post('/api/case/details/highcourt', async (req, res) => {
         });
 
         const html = response.data;
-        const $ = cheerio.load(html);
 
-        const caseDetails = {};
-        $('table.case_details_table tr').each((index, element) => {
-            const label = $(element).find('td:nth-child(1) label, td:nth-child(1) strong').text().replace(/\s+/g, ' ').trim().replace(':', '');
-            const value = $(element).find('td:nth-child(2) label, td:nth-child(2) strong').text().replace(/\s+/g, ' ').trim();
 
-            if (label && value) {
-                if (label.includes("Filing Number")) {
-                    caseDetails.filingNumber = value;
-                } else if (label.includes("Filing Date")) {
-                    caseDetails.filingDate = value;
-                } else if (label.includes("Registration Number")) {
-                    caseDetails.registrationNumber = value;
-                } else if (label.includes("Registration Date")) {
-                    caseDetails.registrationDate = value;
-                }
-            }
-            // Handle the CNR Number row which spans 3 columns for its value
-            const cnrLabel = $(element).find('td:nth-child(1) strong').text().replace(/\s+/g, ' ').trim();
-            if (cnrLabel.includes("CNR Number")) {
-                const cnrValue = $(element).find('td:nth-child(2) strong').text().replace(/\s+/g, ' ').trim();
-                if (cnrValue) {
-                    caseDetails.cnrNumber = cnrValue;
-                }
-            }
+    const $ = cheerio.load(html);
+
+    const caseDetails = {};
+    const $caseDetailsRows = $('.case_details_table tr');
+    $caseDetailsRows.each((i, row) => {
+      const tds = $(row).find('td');
+      
+      if (tds.length >= 2) {
+        const key = $(tds[0]).text().trim();
+        const value = $(tds[1]).text().trim();
+ 
+        caseDetails[key] = value;
+      }
+    });
+
+   
+    const caseStatus = {};
+    const $caseStatusTable = $('.table_r');
+    const $caseStatusRows = $caseStatusTable.find('tr');
+    $caseStatusRows.each((i, row) => {
+      const tds = $(row).find('td');
+      if (tds.length >= 2) {
+        const key = $(tds[0]).text().trim();
+        const value = $(tds[1]).text().trim();
+        caseStatus[key] = value;
+      }
+    });
+
+    const petitionerAdvocateText = $('.Petitioner_Advocate_table').text().trim();
+   
+    const petitionerAdvocate = petitionerAdvocateText.split('\n').map(x => x.trim()).filter(Boolean);
+
+    
+    const respondentAdvocateText = $('.Respondent_Advocate_table').text().trim();
+    const respondentAdvocate = respondentAdvocateText.split('\n').map(x => x.trim()).filter(Boolean);
+
+    
+    const hearingHistory = [];
+    const $hearingTable = $('.history_table');
+    $hearingTable.find('tr').each((i, row) => {
+      
+      if (i === 0) return; 
+      const tds = $(row).find('td');
+      if (tds.length >= 5) {
+        hearingHistory.push({
+          causeListType: $(tds[0]).text().trim(),
+          judge: $(tds[1]).text().trim(),
+          businessOnDate: $(tds[2]).text().trim(),
+          hearingDate: $(tds[3]).text().trim(),
+          purpose: $(tds[4]).text().trim(),
         });
+      }
+    });
 
+    
+    const orders = [];
+    const $orderTable = $('.order_table');
+    $orderTable.find('tr').each((i, row) => {
 
-        const caseStatus = {};
-        $('table.table_r.table.text-left tr').each((index, element) => {
-            const label = $(element).find('td:nth-child(1) strong').text().replace(/\s+/g, ' ').trim().replace(':', '');
-            const value = $(element).find('td:nth-child(2) strong').text().replace(/\s+/g, ' ').trim();
-            if (label && value) {
-                if (label.includes("First Hearing Date")) {
-                    caseStatus.firstHearingDate = value;
-                } else if (label.includes("Next Hearing Date")) {
-                    caseStatus.nextHearingDate = value;
-                } else if (label.includes("Stage of Case")) {
-                    caseStatus.stageOfCase = value;
-                } else if (label.includes("Coram")) {
-                    caseStatus.coram = value;
-                } else if (label.includes("Bench Type")) {
-                    caseStatus.benchType = value;
-                } else if (label.includes("Judicial Branch")) {
-                    caseStatus.judicialBranch = value;
-                } else if (label.includes("State")) {
-                    caseStatus.state = value;
-                } else if (label.includes("District")) {
-                    caseStatus.district = value;
-                } else if (label.includes("Not Before Me")) {
-                    caseStatus.notBeforeMe = value;
-                }
-            }
+      if (i === 0) return; 
+      const tds = $(row).find('td');
+      if (tds.length >= 5) {
+        orders.push({
+          orderNumber: $(tds[0]).text().trim(),
+          orderOn: $(tds[1]).text().trim(),
+          judge: $(tds[2]).text().trim(),
+          orderDate: $(tds[3]).text().trim(),
+          orderLink: $(tds[4]).find('a').attr('href') || null
         });
+      }
+    });
 
-        const petitioner = {};
-        const petitionerText = $('.Petitioner_Advocate_table').text().trim();
-        if (petitionerText) {
-            const lines = petitionerText.split('\n').map(line => line.trim()).filter(line => line.length > 0);
-            if (lines.length > 0) {
-                petitioner.name = lines[0].replace(/^\d+\)\s*/, ''); // Remove "1)"
-                if (lines.length > 1) {
-                    petitioner.advocate = lines[1].replace(/Advocate-\s*/, '');
-                }
-            }
-        }
+    // Build final JSON
+    const parsedData = {
+      caseDetails,
+      caseStatus,
+      petitionerAdvocate,
+      respondentAdvocate,
+      hearingHistory,
+      orders
+    };
 
-        const respondent = {};
-        const respondentText = $('.Respondent_Advocate_table').text().trim();
-        if (respondentText) {
-            const lines = respondentText.split('\n').map(line => line.trim()).filter(line => line.length > 0);
-            if (lines.length > 0) {
-                respondent.name = lines[0].replace(/^\d+\)\s*/, ''); // Remove "1)"
-                if (lines.length > 1) {
-                    respondent.advocate = lines[1].replace(/Advocate -\s*/, '');
-                }
-            }
-        }
+    
+    res.json(parsedData);
 
-
-        const acts = [];
-        $('#act_table tr').slice(1).each((index, element) => { // Skip header row
-            const act = $(element).find('td:nth-child(1)').text().trim();
-            const section = $(element).find('td:nth-child(2)').text().trim();
-            if (act || section) {
-                acts.push({ act, section });
-            }
-        });
-
-        const categoryDetails = {};
-        $('#subject_table tr').each((index, element) => {
-            const label = $(element).find('td:nth-child(1) b').text().trim();
-            const value = $(element).find('td:nth-child(2)').text().trim();
-            if (label && value) {
-                if (label.includes("Category")) {
-                    categoryDetails.category = value;
-                } else if (label.includes("Sub Category")) {
-                    categoryDetails.subCategory = value;
-                }
-            }
-        });
-
-        const trialCourtInformation = {};
-        const lowerCourtText = $('.Lower_court_table').text().trim();
-        if (lowerCourtText) {
-            const lines = lowerCourtText.split('\n').map(line => line.trim()).filter(line => line.length > 0);
-            lines.forEach(line => {
-                if (line.includes("Court Number and Name")) {
-                    trialCourtInformation.courtNumberAndName = line.split(':')[1]?.trim();
-                } else if (line.includes("Case Number and Year")) {
-                    trialCourtInformation.caseNumberAndYear = line.split(':')[1]?.trim();
-                } else if (line.includes("Case Decision Date")) {
-                    trialCourtInformation.caseDecisionDate = line.split(':')[1]?.trim();
-                } else if (line.includes("State")) {
-                    trialCourtInformation.state = line.split(':')[1]?.trim();
-                } else if (line.includes("District")) {
-                    trialCourtInformation.district = line.split(':')[1]?.trim();
-                }
-            });
-        }
-
-        const iaDetails = [];
-        $('table.IAheading tr').slice(1).each((index, element) => { // Skip header row
-            const iaNumber = $(element).find('td:nth-child(1)').text().replace('//', '').replace('Classification :', '').trim();
-            const party = $(element).find('td:nth-child(2)').text().trim();
-            const dateOfFiling = $(element).find('td:nth-child(3)').text().trim();
-            const nextDate = $(element).find('td:nth-child(4)').text().trim();
-            const iaStatus = $(element).find('td:nth-child(5)').text().trim();
-            if (iaNumber || party || dateOfFiling || nextDate || iaStatus) {
-                iaDetails.push({ iaNumber, party, dateOfFiling, nextDate, iaStatus });
-            }
-        });
-
-        const linkedCases = [];
-        $('table.linkedCase tr').slice(1).each((index, element) => { // Skip header row
-            const filingNumber = $(element).find('td:nth-child(1)').text().trim();
-            const caseNumber = $(element).find('td:nth-child(2)').text().trim();
-            if (filingNumber || caseNumber) {
-                linkedCases.push({ filingNumber, caseNumber });
-            }
-        });
-
-        const firDetails = {};
-        const firText = $('.FIR_details_table').text().trim();
-        if (firText) {
-            const lines = firText.split('\n').map(line => line.trim()).filter(line => line.length > 0);
-            lines.forEach(line => {
-                if (line.includes("State")) {
-                    firDetails.state = line.split(':')[1]?.trim();
-                } else if (line.includes("District")) {
-                    firDetails.district = line.split(':')[1]?.trim();
-                } else if (line.includes("Police Station")) {
-                    firDetails.policeStation = line.split(':')[1]?.trim();
-                } else if (line.includes("FIR Number")) {
-                    firDetails.firNumber = line.split(':')[1]?.trim();
-                } else if (line.includes("Year")) {
-                    firDetails.year = line.split(':')[1]?.trim();
-                }
-            });
-        }
-
-        const historyOfCaseHearing = [];
-        $('table.history_table tr').slice(1).each((index, element) => { // Skip header row
-            const causeListType = $(element).find('td:nth-child(1)').text().trim();
-            const judge = $(element).find('td:nth-child(2)').text().trim();
-            // The businessOnDate is within an <a> tag, get text from the <a> tag
-            const businessOnDate = $(element).find('td:nth-child(3) a').text().trim() || $(element).find('td:nth-child(3)').text().trim();
-            const hearingDate = $(element).find('td:nth-child(4)').text().trim();
-            const purposeOfHearing = $(element).find('td:nth-child(5)').text().trim();
-
-            if (causeListType || judge || businessOnDate || hearingDate || purposeOfHearing) {
-                historyOfCaseHearing.push({
-                    causeListType,
-                    judge,
-                    businessOnDate,
-                    hearingDate,
-                    purposeOfHearing
-                });
-            }
-        });
-
-        res.json({
-            caseDetails,
-            caseStatus,
-            petitioner,
-            respondent,
-            acts,
-            categoryDetails,
-            trialCourtInformation,
-            iaDetails,
-            linkedCases,
-            firDetails,
-            historyOfCaseHearing
-        });
-
-    } catch (error) {
-        console.error('Error fetching case details:', error);
-        res.status(500).json({ error: 'Failed to fetch case details', details: error.message });
-    }
+  } catch (error) {
+    console.error('Error fetching case details:', error);
+    res.status(500).json({ error: 'Failed to fetch case details' });
+  }
 });
 
 
