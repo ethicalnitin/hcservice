@@ -17,15 +17,15 @@ app.use(cors({
 }));
 
 
-app.use(express.json()); 
-app.use(express.urlencoded({ extended: true })); 
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 
 app.use((req, res, next) => {
     const timestamp = new Date().toISOString();
     console.log(`\n[${timestamp}] --- Incoming API Request ---`);
     console.log(`[${timestamp}] Method: ${req.method}, Path: ${req.originalUrl}`);
-    console.log(`[${timestamp}] Request Body:`, req.body); 
+    console.log(`[${timestamp}] Request Body:`, req.body);
     next();
 });
 
@@ -65,7 +65,7 @@ function parseSetCookieHeaders(setCookieHeaders) {
     }
     if (jsessionHcservicesValue) {
         cookies['JSESSION'] = jsessionHcservicesValue;
-        cookies['JSESSIONID'] = jsessionHcservicesValue; 
+        cookies['JSESSIONID'] = jsessionHcservicesValue;
     }
 
     return cookies;
@@ -91,6 +91,301 @@ function getSessionIdFromCookies(cookies) {
     return null;
 }
 
+// --- New Endpoint: Fetch Case Types ---
+app.post('/api/case/types', async (req, res) => {
+    const timestamp = new Date().toISOString();
+    console.log(`[${timestamp}] Handling Fetch Case Types request.`);
+
+    const { court_code, state_code, cookies: frontendCookiesObject } = req.body;
+
+    console.log(`[${timestamp}] Received parameters:`);
+    console.log(`  - Court Code: ${court_code}`);
+    console.log(`  - State Code: ${state_code}`);
+    console.log(`  - Cookies Object from Frontend:`, frontendCookiesObject);
+
+    const cookieHeaderStringForExternalRequest = Object.entries(frontendCookiesObject || {})
+        .map(([key, value]) => `${key}=${value}`)
+        .join('; ');
+
+    if (!court_code || !state_code || !cookieHeaderStringForExternalRequest) {
+        const missingFields = [];
+        if (!court_code) missingFields.push('court_code');
+        if (!state_code) missingFields.push('state_code');
+        if (!cookieHeaderStringForExternalRequest) missingFields.push('cookies');
+        console.error(`[${timestamp}] ERROR: Missing required fields: ${missingFields.join(', ')}`);
+        return res.status(400).json({ error: `Missing required fields: ${missingFields.join(', ')}` });
+    }
+
+    const targetUrl = `https://hcservices.ecourts.gov.in/hcservices/cases_qry/index_qry.php?action_code=fillCaseType`;
+
+    try {
+        const payload = querystring.stringify({
+            court_code: court_code,
+            state_code: state_code
+        });
+
+        const headers = {
+            'accept': '*/*',
+            'accept-language': 'en-US,en;q=0.5',
+            'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+            'Cookie': cookieHeaderStringForExternalRequest,
+            'origin': 'https://hcservices.ecourts.gov.in',
+            'priority': 'u=1, i',
+            'referer': 'https://hcservices.ecourts.gov.in/',
+            'sec-ch-ua': '"Brave";v="137", "Chromium";v="137", "Not/A)Brand";v="24"',
+            'sec-ch-ua-mobile': '?0',
+            'sec-ch-ua-platform': '"Windows"',
+            'sec-fetch-dest': 'empty',
+            'sec-fetch-mode': 'cors',
+            'sec-fetch-site': 'same-origin',
+            'sec-gpc': '1',
+            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36',
+            'x-requested-with': 'XMLHttpRequest',
+            'Content-Length': Buffer.byteLength(payload).toString()
+        };
+
+        console.log(`[${timestamp}] Sending request to eCourts for case types with payload: ${payload}`);
+        console.log(`[${timestamp}] Headers for case types request:`, headers);
+
+        const response = await axios.post(targetUrl, payload, { headers: headers, timeout: 15000 });
+
+        console.log(`[${timestamp}] Received response from eCourts for case types. Status: ${response.status}`);
+        let responseData = response.data;
+        console.log(`[${timestamp}] Raw response data for case types:`, responseData);
+
+        const caseTypes = [];
+        if (typeof responseData === 'string' && responseData.includes('~') && responseData.includes('#')) {
+            const items = responseData.split('#');
+            items.forEach(item => {
+                const parts = item.split('~');
+                if (parts.length === 2) {
+                    const code = parts[0].trim();
+                    const name = parts[1].trim();
+                    if (code !== '' && name !== 'Select Case Type') {
+                        caseTypes.push({ code: code, name: name });
+                    }
+                }
+            });
+        } else {
+            console.warn(`[${timestamp}] WARN: Unexpected response format for case types. Expected delimited string.`);
+        }
+
+        const newSetCookieHeaders = response.headers['set-cookie'];
+        const updatedCookiesForFrontend = parseSetCookieHeaders(newSetCookieHeaders);
+        const finalSessionId = getSessionIdFromCookies(updatedCookiesForFrontend) || frontendCookiesObject.JSESSIONID || frontendCookiesObject.JSESSION || frontendCookiesObject.HCSERVICES_SESSID;
+
+
+        console.log(`[${timestamp}] Parsed case types:`, caseTypes);
+        res.json({
+            caseTypes: caseTypes,
+            cookies: updatedCookiesForFrontend,
+            sessionID: finalSessionId
+        });
+
+    } catch (error) {
+        console.error(`[${timestamp}] ERROR in /api/case/types: ${error.message}`);
+        if (error.response) {
+            console.error(`[${timestamp}] Error Response Status: ${error.response.status}`);
+            console.error(`[${timestamp}] Error Response Data Preview: ${String(error.response.data).substring(0, 500)}...`);
+            console.error(`[${timestamp}] Error Response Headers:`, error.response.headers);
+        } else if (error.request) {
+            console.error(`[${timestamp}] No response received from target server.`);
+        }
+        res.status(500).json({ error: 'Failed to fetch case types', details: error.message });
+    } finally {
+        console.log(`[${timestamp}] --- /api/case/types request finished ---`);
+    }
+});
+
+// --- New Endpoint: Show Records (Case Number Search) ---
+app.post('/api/case/records', async (req, res) => {
+    const timestamp = new Date().toISOString();
+    console.log(`[${timestamp}] Handling Show Records request.`);
+
+    const {
+        court_code,
+        state_code,
+        court_complex_code,
+        caseStatusSearchType, // e.g., CScaseNumber
+        captcha,
+        case_type,
+        case_no,
+        rgyear,
+        caseNoType = 'new',
+        displayOldCaseNo = 'NO',
+        cookies: frontendCookiesObject
+    } = req.body;
+
+    console.log(`[${timestamp}] Received parameters:`);
+    console.log(`  - Court Code: ${court_code}`);
+    console.log(`  - State Code: ${state_code}`);
+    console.log(`  - Court Complex Code: ${court_complex_code}`);
+    console.log(`  - Search Type: ${caseStatusSearchType}`);
+    console.log(`  - Captcha: ${captcha}`);
+    console.log(`  - Case Type: ${case_type}`);
+    console.log(`  - Case No: ${case_no}`);
+    console.log(`  - Reg Year: ${rgyear}`);
+    console.log(`  - Cookies Object from Frontend:`, frontendCookiesObject);
+
+    const cookieHeaderStringForExternalRequest = Object.entries(frontendCookiesObject || {})
+        .map(([key, value]) => `${key}=${value}`)
+        .join('; ');
+
+    if (!court_code || !state_code || !court_complex_code || !caseStatusSearchType || !captcha ||
+        !case_type || !case_no || !rgyear || !cookieHeaderStringForExternalRequest) {
+        const missingFields = [];
+        if (!court_code) missingFields.push('court_code');
+        if (!state_code) missingFields.push('state_code');
+        if (!court_complex_code) missingFields.push('court_complex_code');
+        if (!caseStatusSearchType) missingFields.push('caseStatusSearchType');
+        if (!captcha) missingFields.push('captcha');
+        if (!case_type) missingFields.push('case_type');
+        if (!case_no) missingFields.push('case_no');
+        if (!rgyear) missingFields.push('rgyear');
+        if (!cookieHeaderStringForExternalRequest) missingFields.push('cookies');
+
+        console.error(`[${timestamp}] ERROR: Missing required fields: ${missingFields.join(', ')}`);
+        return res.status(400).json({ error: `Missing required fields: ${missingFields.join(', ')}` });
+    }
+
+    const targetUrl = `https://hcservices.ecourts.gov.in/hcservices/cases_qry/index_qry.php?action_code=showRecords`;
+
+    try {
+        const payload = querystring.stringify({
+            court_code: court_code,
+            state_code: state_code,
+            court_complex_code: court_complex_code,
+            caseStatusSearchType: caseStatusSearchType,
+            captcha: captcha,
+            case_type: case_type,
+            case_no: case_no,
+            rgyear: rgyear,
+            caseNoType: caseNoType,
+            displayOldCaseNo: displayOldCaseNo
+        });
+
+        const headers = {
+            'accept': 'application/json, text/javascript, */*; q=0.01',
+            'accept-language': 'en-US,en;q=0.5',
+            'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+            'Cookie': cookieHeaderStringForExternalRequest,
+            'origin': 'https://hcservices.ecourts.gov.in',
+            'priority': 'u=1, i',
+            'referer': 'https://hcservices.ecourts.gov.in/',
+            'sec-ch-ua': '"Brave";v="137", "Chromium";v="137", "Not/A)Brand";v="24"',
+            'sec-ch-ua-mobile': '?0',
+            'sec-ch-ua-platform': '"Windows"',
+            'sec-fetch-dest': 'empty',
+            'sec-fetch-mode': 'cors',
+            'sec-fetch-site': 'same-origin',
+            'sec-gpc': '1',
+            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36',
+            'x-requested-with': 'XMLHttpRequest',
+            'Content-Length': Buffer.byteLength(payload).toString()
+        };
+
+        console.log(`[${timestamp}] Sending request to eCourts for records with payload: ${payload}`);
+        console.log(`[${timestamp}] Headers for records request:`, headers);
+
+        const response = await axios.post(targetUrl, payload, { headers: headers, timeout: 30000 });
+
+        console.log(`[${timestamp}] Received response from eCourts for records. Status: ${response.status}`);
+        let govData = response.data;
+        console.log(`[${timestamp}] Raw response data from eCourts (first 500 chars): ${String(govData).substring(0, 500)}...`);
+
+        if (typeof govData === 'string') {
+            try {
+                govData = JSON.parse(govData);
+                console.log(`[${timestamp}] Successfully parsed main response data as JSON.`);
+            } catch (jsonErr) {
+                console.warn(`[${timestamp}] WARN: Main response data is a string but not valid JSON, leaving as string. Error: ${jsonErr.message}`);
+                res.status(500).json({ error: 'Invalid JSON response from eCourts, possibly an error page.', details: jsonErr.message, rawResponse: govData.substring(0, 200) + "..." });
+                console.log(`[${timestamp}] Sent 500 Internal Server Error for invalid JSON response.`);
+                return;
+            }
+        }
+
+        if (govData && typeof govData === 'object' && govData.con !== undefined) {
+            let processedCon = govData.con;
+
+            if (Array.isArray(processedCon) && processedCon.length === 1 && typeof processedCon[0] === 'string') {
+                console.log(`[${timestamp}] Detected 'con' as single-element array containing a JSON string. Attempting to parse...`);
+                try {
+                    const tempParsed = JSON.parse(processedCon[0]);
+                    if (Array.isArray(tempParsed)) {
+                        processedCon = tempParsed;
+                        console.log(`[${timestamp}] Successfully parsed string inside govData.con.`);
+                    } else {
+                        console.warn(`[${timestamp}] WARN: Parsed content of govData.con[0] is not an array after parsing. Keeping original.`);
+                    }
+                } catch (err) {
+                    console.error(`[${timestamp}] ERROR: Failed to parse string inside govData.con: ${err.message}`);
+                }
+            } else if (typeof processedCon === 'string') {
+                console.log(`[${timestamp}] Detected 'con' as a raw JSON string. Attempting to parse...`);
+                try {
+                    let tempParsed = JSON.parse(processedCon);
+                    if (Array.isArray(tempParsed) && tempParsed.length > 0 && Array.isArray(tempParsed[0])) {
+                        console.log(`[${timestamp}] Parsed 'con' string, and flattened nested array within it.`);
+                        processedCon = tempParsed[0];
+                    } else if (Array.isArray(tempParsed)) {
+                        console.log(`[${timestamp}] Parsed 'con' string, no further flattening needed.`);
+                        processedCon = tempParsed;
+                    } else {
+                        console.warn(`[${timestamp}] WARN: Parsed 'con' string is not an array. Keeping original.`);
+                    }
+                } catch (err) {
+                    console.error(`[${timestamp}] ERROR: Failed to parse govData.con raw string: ${err.message}`);
+                }
+            } else if (Array.isArray(processedCon) && processedCon.length > 0 && Array.isArray(processedCon[0])) {
+                console.log(`[${timestamp}] Detected 'con' as an array of arrays. Flattening.`);
+                processedCon = processedCon[0];
+            }
+            govData.con = processedCon;
+        }
+
+        const newSetCookieHeaders = response.headers['set-cookie'];
+        const updatedCookiesForFrontend = parseSetCookieHeaders(newSetCookieHeaders);
+        const finalSessionId = getSessionIdFromCookies(updatedCookiesForFrontend) || frontendCookiesObject.JSESSIONID || frontendCookiesObject.JSESSION || frontendCookiesObject.HCSERVICES_SESSID;
+
+
+        console.log(`[${timestamp}] Final processed data to send to frontend:`, govData);
+        console.log(`[${timestamp}] New/Updated cookies to send to frontend:`, updatedCookiesForFrontend);
+        console.log(`[${timestamp}] Final Session ID for frontend:`, finalSessionId);
+
+        res.json({
+            sessionID: finalSessionId,
+            data: {
+                con: (govData.con && Array.isArray(govData.con)) ? govData.con : []
+            },
+            cookies: updatedCookiesForFrontend
+        });
+        console.log(`[${timestamp}] Case records response sent successfully to frontend.`);
+
+    } catch (error) {
+        const errorTimestamp = new Date().toISOString();
+        console.error(`[${errorTimestamp}] FATAL ERROR in /api/case/records: ${error.message}`);
+        if (error.code === 'ECONNRESET') {
+            console.error(`[${errorTimestamp}] Connection reset by peer (socket hang up). This often indicates the target server closed the connection abruptly.`);
+            console.error(`[${errorTimestamp}] Possible causes: IP blocking, rapid requests, session invalidation, or subtle header/payload issues.`);
+        }
+        if (error.response) {
+            console.error(`[${errorTimestamp}] Error Response Status: ${error.response.status}`);
+            console.error(`[${errorTimestamp}] Error Response Data Preview: ${String(error.response.data).substring(0, 500)}...`);
+            console.error(`[${errorTimestamp}] Error Response Headers:`, error.response.headers);
+        } else if (error.request) {
+            console.error(`[${errorTimestamp}] No response received from target server (request sent but no reply).`);
+        } else {
+            console.error(`[${errorTimestamp}] Error setting up the request: ${error.message}`);
+        }
+        res.status(500).json({ error: 'Failed to fetch case records', details: error.message, code: error.code });
+        console.log(`[${errorTimestamp}] Sent 500 Internal Server Error response.`);
+    } finally {
+        console.log(`[${timestamp}] --- /api/case/records request finished ---`);
+    }
+});
+
+
 app.post('/api/benches/highcourt', async (req, res) => {
     const timestamp = new Date().toISOString();
     console.log(`[${timestamp}] Handling High Court Benches request.`);
@@ -100,7 +395,7 @@ app.post('/api/benches/highcourt', async (req, res) => {
         appFlag = "web"
     } = req.body;
 
-  
+
     if (!state_code) {
         return res.status(400).json({
             error: "Missing required parameters: state_code"
@@ -149,7 +444,7 @@ app.post('/api/benches/highcourt', async (req, res) => {
 
         const benches = [];
 
-     
+
         if (typeof responseData === 'string' && responseData.includes('~') && responseData.includes('#')) {
             const items = responseData.split('#');
             items.forEach(item => {
@@ -200,7 +495,7 @@ app.post('/api/captcha/highcourt', async (req, res) => {
                 'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
                 'Accept-Encoding': 'gzip, deflate, br',
                 'Accept-Language': 'en-US,en;q=0.5',
-                'Referer': 'https://hcservices.ecourts.gov.in/hcservices/',
+                'Referer': 'https://hcservices.ecourts.gov.in/',
                 'Sec-Fetch-Dest': 'image',
                 'Sec-Fetch-Mode': 'no-cors',
                 'Sec-Fetch-Site': 'same-origin',
@@ -272,16 +567,16 @@ app.post('/api/case/highcourt', async (req, res) => {
     } = req.body;
 
     console.log(`[${timestamp}] Received parameters:`);
-    console.log(`   - Captcha: ${captcha}`);
-    console.log(`   - Pet/Res Name: ${petres_name}`);
-    console.log(`   - Reg Year: ${rgyear}`);
-    console.log(`   - Search Type: ${caseStatusSearchType}`);
-    console.log(`   - F: ${f}`);
-    console.log(`   - Court Code: ${court_code}`);
-    console.log(`   - State Code: ${state_code}`);
-    console.log(`   - Court Complex Code: ${court_complex_code}`);
-    console.log(`   - Cookies Object from Frontend:`, frontendCookiesObject);
-    console.log(`   - Session ID from Frontend (if provided): ${frontendSessionId}`);
+    console.log(`   - Captcha: ${captcha}`);
+    console.log(`   - Pet/Res Name: ${petres_name}`);
+    console.log(`   - Reg Year: ${rgyear}`);
+    console.log(`   - Search Type: ${caseStatusSearchType}`);
+    console.log(`   - F: ${f}`);
+    console.log(`   - Court Code: ${court_code}`);
+    console.log(`   - State Code: ${state_code}`);
+    console.log(`   - Court Complex Code: ${court_complex_code}`);
+    console.log(`   - Cookies Object from Frontend:`, frontendCookiesObject);
+    console.log(`   - Session ID from Frontend (if provided): ${frontendSessionId}`);
 
     const cookieHeaderStringForExternalRequest = Object.entries(frontendCookiesObject || {})
         .map(([key, value]) => `${key}=${value}`)
@@ -468,14 +763,14 @@ app.post('/api/case/details/highcourt', async (req, res) => {
     } = req.body;
 
     console.log(`[${timestamp}] Received parameters for case details:`);
-    console.log(`   - HCSERVICES_SESSID: ${hcservices_sessid}`);
-    console.log(`   - JSESSION: ${jsession_value}`);
-    console.log(`   - Court Code: ${court_code}`);
-    console.log(`   - State Code: ${state_code}`);
-    console.log(`   - Court Complex Code: ${court_complex_code}`);
-    console.log(`   - Case No: ${case_no}`);
-    console.log(`   - CINO: ${cino}`);
-    console.log(`   - App Flag: ${appFlag}`);
+    console.log(`   - HCSERVICES_SESSID: ${hcservices_sessid}`);
+    console.log(`   - JSESSION: ${jsession_value}`);
+    console.log(`   - Court Code: ${court_code}`);
+    console.log(`   - State Code: ${state_code}`);
+    console.log(`   - Court Complex Code: ${court_complex_code}`);
+    console.log(`   - Case No: ${case_no}`);
+    console.log(`   - CINO: ${cino}`);
+    console.log(`   - App Flag: ${appFlag}`);
 
     if (!hcservices_sessid || !jsession_value || !court_code || !state_code || !court_complex_code || !case_no || !cino) {
         const missingFields = [];
@@ -538,7 +833,6 @@ app.post('/api/case/details/highcourt', async (req, res) => {
         console.log(`[${timestamp}] Raw HTML response from eCourts (first 500 chars): ${String(html).substring(0, 500)}...`);
 
 
-        
         const $ = cheerio.load(html);
 
         const caseDetails = {};
@@ -653,79 +947,6 @@ app.post('/api/case/details/highcourt', async (req, res) => {
 });
 
 
-
-app.post('/api/pdf/highcourt', async (req, res) => {
-    const timestamp = new Date().toISOString();
-    console.log(`[${timestamp}] Handling High Court PDF Proxy request.`);
-
-    console.log(`[${timestamp}] PDF Proxy: Received Request Body:`, req.body);
-
-    const { pdfUrl, cookies: frontendCookiesObject } = req.body;
-
-    if (!pdfUrl || !frontendCookiesObject) {
-        console.error(`[${timestamp}] ERROR: Missing required parameters for PDF proxy: pdfUrl or cookies.`);
-        return res.status(400).json({ error: 'Missing required parameters: pdfUrl and/or cookies' });
-    }
-
-    const cookieHeaderStringForExternalRequest = Object.entries(frontendCookiesObject)
-        .map(([key, value]) => `${key}=${value}`)
-        .join('; ');
-
-    console.log(`[${timestamp}] PDF Proxy: Target URL: ${pdfUrl}`);
-    console.log(`[${timestamp}] PDF Proxy: Using cookies: ${cookieHeaderStringForExternalRequest}`);
-
-    try {
-        const response = await axios.get(pdfUrl, {
-            responseType: 'arraybuffer', 
-            headers: {
-                'Accept': 'application/pdf',
-                'Accept-Language': 'en-US,en;q=0.5',
-                'Cookie': cookieHeaderStringForExternalRequest,
-                'Origin': 'https://hcservices.ecourts.gov.in',
-                'Referer': 'https://hcservices.ecourts.gov.in/',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
-                'Sec-Fetch-Dest': 'document',
-                'Sec-Fetch-Mode': 'navigate',
-                'Sec-Fetch-Site': 'same-origin',
-                'Priority': 'u=1, i',
-                'Connection': 'keep-alive',
-                'Accept-Encoding': 'gzip, deflate, br',
-            },
-            timeout: 30000
-        });
-
-        // Set appropriate headers for the response back to the client
-        res.setHeader('Content-Type', response.headers['content-type'] || 'application/pdf');
-        res.setHeader('Content-Length', response.headers['content-length']);
-        // Optional: If you want the browser to download it instead of opening in a new tab:
-        res.setHeader('Content-Disposition', 'attachment; filename="order.pdf"');
-
-        console.log(`[${timestamp}] PDF Proxy: Streaming PDF back to client. Content-Type: ${response.headers['content-type']}`);
-        res.send(response.data); 
-
-    } catch (error) {
-        console.error(`[${timestamp}] ERROR in /api/pdf/highcourt: ${error.message}`);
-        if (error.response) {
-            console.error(`[${timestamp}] PDF Proxy Error Response Status: ${error.response.status}`);
-            console.error(`[${timestamp}] PDF Proxy Error Response Headers:`, error.response.headers);
-            console.error(`[${timestamp}] PDF Proxy Error Response Data Preview: ${Buffer.isBuffer(error.response.data) ? error.response.data.toString('utf8').substring(0, 500) : String(error.response.data).substring(0, 500)}...`);
-            res.status(error.response.status).json({
-                error: `Failed to fetch PDF from external service (Status: ${error.response.status})`,
-                details: error.response.data.toString('utf8').substring(0, 500)
-            });
-        } else if (error.request) {
-            console.error(`[${timestamp}] PDF Proxy: No response received from target PDF server.`);
-            res.status(500).json({ error: 'No response from target PDF server.', details: error.message });
-        } else {
-            console.error(`[${timestamp}] PDF Proxy: Error setting up request:`, error.message);
-            res.status(500).json({ error: 'Error setting up PDF fetch request.', details: error.message });
-        }
-    } finally {
-        console.log(`[${timestamp}] --- /api/pdf/highcourt request finished ---`);
-    }
-});
-
-
 app.listen(port, () => {
-    console.log(`Server running on port ${port}`);
+    console.log(`Server listening at http://localhost:${port}`);
 });
